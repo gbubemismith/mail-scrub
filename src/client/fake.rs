@@ -149,6 +149,10 @@ fn new_label(state: &mut State, name: &str) -> Label {
     label
 }
 
+#[allow(
+    clippy::unused_async_trait_impl,
+    reason = "the fake is in-memory so nothing awaits, but it must match the trait's async signatures"
+)]
 impl EmailClient for FakeClient {
     type Cursor = FakeCursor;
     type FilterCriteria = FakeCriteria;
