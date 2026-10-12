@@ -1,5 +1,4 @@
--- Machine-owned state. See "Mail Scrub Schema": everything here is a cache of
--- convenience that a Full Run can rebuild, except Pins.
+-- Machine-owned state: a cache that a Full Run can rebuild, except Pins.
 
 CREATE TABLE run (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,

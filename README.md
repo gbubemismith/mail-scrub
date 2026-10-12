@@ -14,11 +14,11 @@ cargo run -- run --dry-run   # record a Run without advancing the cursor
 cargo run -- run --full      # ignore the stored cursor
 ```
 
-Global flags: `--config <path>` and `--db <path>`.
+Global flag: `--config <path>`.
 
-| File | Default |
+| File | Location |
 | --- | --- |
-| Config | `$XDG_CONFIG_HOME/mailscrub/mailscrub.toml` (else `~/.config/mailscrub/mailscrub.toml`) |
+| Config | `$XDG_CONFIG_HOME/mailscrub/mailscrub.toml` (else `~/.config/mailscrub/mailscrub.toml`); override with `--config` |
 | Database | `$XDG_DATA_HOME/mailscrub/mailscrub.db` (else `~/.local/share/mailscrub/mailscrub.db`) |
 
 A missing config at the default path means built-in defaults. An explicit `--config` that doesn't exist is an error.

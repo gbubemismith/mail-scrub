@@ -21,10 +21,6 @@ pub struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
 
-    /// Database file (default: mailscrub/mailscrub.db in the XDG data dir)
-    #[arg(long, global = true)]
-    db: Option<PathBuf>,
-
     #[command(subcommand)]
     command: Command,
 }
@@ -60,12 +56,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Run { dry_run, full } => {
             let config = load_config(cli.config)?;
-            let db_path = match cli.db {
-                Some(path) => path,
-                None => data_dir()?.join("mailscrub.db"),
-            };
-            let db = Db::open(&db_path).await.context("cannot open database")?;
-            // The Gmail client arrives in MS-03; until then a Run sees an empty fake mailbox.
+            let db = Db::open(&data_dir()?.join("mailscrub.db"))
+                .await
+                .context("cannot open database")?;
             eprintln!("note: using the in-memory fake client; Gmail is not wired up yet");
             let summary = run::execute(
                 &FakeClient::new(),

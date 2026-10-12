@@ -168,8 +168,7 @@ async fn classifier_stage(
     Ok(())
 }
 
-/// Skeleton: nothing is ever decided, so there is nothing to apply; it only
-/// counts Unknowns. Label changes arrive with the first real Decisions.
+/// Counts the Decisions that came out Unknown.
 async fn applier(mut decisions: mpsc::Receiver<Decision>) -> Result<RunCounts, RunError> {
     let mut counts = RunCounts::default();
     while let Some(decision) = decisions.recv().await {

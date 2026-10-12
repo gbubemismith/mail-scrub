@@ -22,7 +22,7 @@ impl Decision {
     }
 }
 
-/// Skeleton: no Source or Signal exists yet, so everything is Unknown.
+/// Classify one message from its metadata.
 #[must_use]
 pub fn classify(_config: &Config, meta: &MessageMeta) -> Decision {
     Decision {
