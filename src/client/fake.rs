@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::num::ParseIntError;
 use std::str::FromStr;
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
 use super::{Changes, ClientError, EmailClient, Filter, Label, LabelId, MessageId, MessageMeta};
 
@@ -72,12 +72,14 @@ pub struct FakeClient {
 }
 
 impl FakeClient {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().expect("fake client state poisoned")
+        // A panic in another test thread must not hide this test's own result.
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Seed a message. It becomes visible to `changes_since` cursors taken

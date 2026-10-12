@@ -1,4 +1,4 @@
-//! The machine-owned SQLite store. Schema lives in `migrations/`.
+//! The machine-owned `SQLite` store. Schema lives in `migrations/`.
 
 use std::path::Path;
 use std::str::FromStr;
@@ -29,6 +29,7 @@ pub enum RunKind {
 }
 
 impl RunKind {
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             RunKind::Full => "full",
@@ -72,6 +73,11 @@ pub struct Db {
 
 impl Db {
     /// Open (creating if needed) the database file and bring the schema up to date.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the directory or file cannot be created, or the
+    /// migrations fail.
     pub async fn open(path: &Path) -> Result<Self, DbError> {
         if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
             std::fs::create_dir_all(dir).map_err(|source| DbError::CreateDir {
@@ -87,6 +93,10 @@ impl Db {
 
     /// A throwaway database. One connection, because every in-memory
     /// connection would otherwise be its own empty database.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the migrations fail.
     pub async fn open_in_memory() -> Result<Self, DbError> {
         let options = SqliteConnectOptions::from_str("sqlite::memory:")?;
         let pool = SqlitePoolOptions::new()
@@ -105,6 +115,10 @@ impl Db {
     }
 
     /// Record the start of a Run and return its id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the insert fails.
     pub async fn begin_run(
         &self,
         kind: RunKind,
@@ -113,7 +127,7 @@ impl Db {
     ) -> Result<i64, DbError> {
         let started_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs() as i64);
+            .map_or(0, |d| d.as_secs().cast_signed());
         let result = sqlx::query(
             "INSERT INTO run (started_at, kind, cursor_before, dry_run) VALUES (?, ?, ?, ?)",
         )
@@ -126,6 +140,11 @@ impl Db {
         Ok(result.last_insert_rowid())
     }
 
+    /// Record how a Run ended.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the update fails.
     pub async fn finish_run(
         &self,
         run_id: i64,
@@ -136,9 +155,9 @@ impl Db {
             "UPDATE run SET cursor_after = ?, labelled = ?, filters_changed = ?, unknown = ? WHERE id = ?",
         )
         .bind(cursor_after)
-        .bind(counts.labelled as i64)
-        .bind(counts.filters_changed as i64)
-        .bind(counts.unknown as i64)
+        .bind(counts.labelled.cast_signed())
+        .bind(counts.filters_changed.cast_signed())
+        .bind(counts.unknown.cast_signed())
         .bind(run_id)
         .execute(&self.pool)
         .await?;
@@ -148,6 +167,10 @@ impl Db {
     /// The cursor an Incremental Run should start from: where the last
     /// finished, non-dry Run got to. A dry run applied nothing, so the
     /// messages it saw still need visiting.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
     pub async fn last_cursor(&self) -> Result<Option<String>, DbError> {
         let row = sqlx::query(
             "SELECT cursor_after FROM run WHERE dry_run = 0 AND cursor_after IS NOT NULL ORDER BY id DESC LIMIT 1",
@@ -158,6 +181,10 @@ impl Db {
     }
 
     /// All Runs, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails or a row holds an unknown run kind.
     pub async fn runs(&self) -> Result<Vec<RunRecord>, DbError> {
         let rows = sqlx::query("SELECT * FROM run ORDER BY id")
             .fetch_all(&self.pool)
@@ -171,9 +198,9 @@ impl Db {
                     cursor_before: r.get("cursor_before"),
                     cursor_after: r.get("cursor_after"),
                     counts: RunCounts {
-                        labelled: r.get::<i64, _>("labelled") as u64,
-                        filters_changed: r.get::<i64, _>("filters_changed") as u64,
-                        unknown: r.get::<i64, _>("unknown") as u64,
+                        labelled: r.get::<i64, _>("labelled").cast_unsigned(),
+                        filters_changed: r.get::<i64, _>("filters_changed").cast_unsigned(),
+                        unknown: r.get::<i64, _>("unknown").cast_unsigned(),
                     },
                     dry_run: r.get("dry_run"),
                 })

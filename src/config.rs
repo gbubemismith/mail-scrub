@@ -33,6 +33,11 @@ pub struct Config {
 }
 
 impl Config {
+    /// Read and parse the config file at `path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read or is not a valid config.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
             path: path.to_owned(),

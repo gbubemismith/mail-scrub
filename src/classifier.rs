@@ -16,12 +16,14 @@ pub struct Decision {
 
 impl Decision {
     /// Unknown on either dimension: such a message is left untouched.
+    #[must_use]
     pub fn is_unknown(&self) -> bool {
         self.sender_category.is_none() || self.email_type.is_none()
     }
 }
 
 /// Skeleton: no Source or Signal exists yet, so everything is Unknown.
+#[must_use]
 pub fn classify(_config: &Config, meta: &MessageMeta) -> Decision {
     Decision {
         message_id: meta.id.clone(),

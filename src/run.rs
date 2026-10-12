@@ -62,6 +62,13 @@ pub enum RunError {
     StageStopped(&'static str),
 }
 
+/// Perform one Run against `client`, recording it in `db`.
+///
+/// # Errors
+///
+/// Returns an error if the client or database fails, or the stored cursor is
+/// not valid for this provider. A Run that fails part way leaves its row
+/// without a `cursor_after`.
 pub async fn execute<C: EmailClient>(
     client: &C,
     db: &Db,
