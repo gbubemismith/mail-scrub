@@ -19,7 +19,7 @@ Global flag: `--config <path>`.
 | File | Location |
 | --- | --- |
 | Config | `$XDG_CONFIG_HOME/mailscrub/mailscrub.toml` (else `~/.config/mailscrub/mailscrub.toml`); override with `--config` |
-| Database | `$XDG_DATA_HOME/mailscrub/mailscrub.db` (else `~/.local/share/mailscrub/mailscrub.db`) |
+| Database | `$XDG_DATA_HOME/mailscrub/mailscrub.db` (else `~/.local/share/mailscrub/mailscrub.db`); no flag, move it with `$XDG_DATA_HOME` |
 
 A missing config at the default path means built-in defaults. An explicit `--config` that doesn't exist is an error.
 
