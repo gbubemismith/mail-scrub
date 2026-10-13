@@ -7,6 +7,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use sqlx::Row;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 
+use crate::classifier::{Decision, Signal, Source, TypeDecision, sender_host};
+use crate::client::MessageMeta;
+
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
     #[error("cannot create database directory {}: {source}", path.display())]
@@ -20,6 +23,8 @@ pub enum DbError {
     Migrate(#[from] sqlx::migrate::MigrateError),
     #[error("unknown run kind in database: {0}")]
     UnknownRunKind(String),
+    #[error("unreadable decision in database: {0}")]
+    BadDecision(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +69,15 @@ pub struct RunRecord {
     pub cursor_after: Option<String>,
     pub counts: RunCounts,
     pub dry_run: bool,
+}
+
+/// A stored Decision and whether its labels were written to the mailbox.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecisionRecord {
+    pub decision: Decision,
+    pub run_id: i64,
+    /// `false` for a dry run, which records what it would have done.
+    pub applied: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -164,6 +178,60 @@ impl Db {
         Ok(())
     }
 
+    /// Store the message and its Decision, replacing any earlier Decision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the writes fail.
+    pub async fn record_decision(
+        &self,
+        run_id: i64,
+        message: &MessageMeta,
+        decision: &Decision,
+        applied: bool,
+    ) -> Result<(), DbError> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO message (id, sender_address, sender_domain) VALUES (?, ?, ?) \
+             ON CONFLICT (id) DO UPDATE SET sender_address = excluded.sender_address, \
+             sender_domain = excluded.sender_domain",
+        )
+        .bind(&message.id)
+        .bind(&message.sender_address)
+        .bind(sender_host(&message.sender_address))
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT OR REPLACE INTO decision \
+             (message_id, sender_category, sender_source, email_type, type_signal, signal_key, run_id, applied) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&decision.message_id)
+        .bind(decision.sender_category.as_ref().map(|(c, _)| c))
+        .bind(decision.sender_category.as_ref().map(|(_, s)| s.as_str()))
+        .bind(decision.email_type.as_ref().map(|t| &t.email_type))
+        .bind(decision.email_type.as_ref().map(|t| t.signal.as_str()))
+        .bind(decision.email_type.as_ref().map(|t| &t.signal_key))
+        .bind(run_id)
+        .bind(applied)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// All stored Decisions, ordered by message id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails or a row holds an unknown Source or Signal.
+    pub async fn decisions(&self) -> Result<Vec<DecisionRecord>, DbError> {
+        let rows = sqlx::query("SELECT * FROM decision ORDER BY message_id")
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter().map(decision_from_row).collect()
+    }
+
     /// The cursor an Incremental Run should start from: where the last
     /// finished, non-dry Run got to. A dry run applied nothing, so the
     /// messages it saw still need visiting.
@@ -207,4 +275,38 @@ impl Db {
             })
             .collect()
     }
+}
+
+fn decision_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<DecisionRecord, DbError> {
+    let sender_category = match (
+        r.get::<Option<String>, _>("sender_category"),
+        r.get::<Option<String>, _>("sender_source"),
+    ) {
+        (Some(category), Some(source)) => Some((
+            category,
+            source.parse::<Source>().map_err(DbError::BadDecision)?,
+        )),
+        _ => None,
+    };
+    let email_type = match (
+        r.get::<Option<String>, _>("email_type"),
+        r.get::<Option<String>, _>("type_signal"),
+        r.get::<Option<String>, _>("signal_key"),
+    ) {
+        (Some(email_type), Some(signal), Some(signal_key)) => Some(TypeDecision {
+            email_type,
+            signal: signal.parse::<Signal>().map_err(DbError::BadDecision)?,
+            signal_key,
+        }),
+        _ => None,
+    };
+    Ok(DecisionRecord {
+        decision: Decision {
+            message_id: r.get("message_id"),
+            sender_category,
+            email_type,
+        },
+        run_id: r.get("run_id"),
+        applied: r.get("applied"),
+    })
 }

@@ -1,0 +1,13 @@
+# Edit this and rerun `cargo run --example demo -- examples/demo.toml`.
+
+[overrides.snender]
+"amazon.com" = "Sport"
+"chase.com"  = "Gaming"
+
+[[overrides.type]]
+address = "ship-confirm@amazon.com"
+type    = "Shipping"
+
+[[overrides.type]]
+address = "no-reply@alertsp.chase.com"
+type    = "Security"

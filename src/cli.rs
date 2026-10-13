@@ -67,6 +67,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 RunOptions { dry_run, full },
             )
             .await?;
+            for change in &summary.planned {
+                println!("{change}");
+            }
             println!("{summary}");
             Ok(())
         }

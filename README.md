@@ -10,8 +10,9 @@ It then writes Gmail filters for every decision Gmail can reproduce exactly, so 
 
 ```sh
 cargo run -- run             # one Run against the in-memory fake
-cargo run -- run --dry-run   # record a Run without advancing the cursor
+cargo run -- run --dry-run   # print planned label changes, write nothing, don't advance the cursor
 cargo run -- run --full      # ignore the stored cursor
+cargo run --example demo -- examples/demo.toml [--dry-run]   # seeded fake mailbox: edit the TOML, rerun, see labels
 ```
 
 Global flag: `--config <path>`.

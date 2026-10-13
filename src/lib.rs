@@ -8,6 +8,7 @@
 #![deny(clippy::panic)]
 #![warn(clippy::pedantic)]
 
+pub mod apply;
 pub mod classifier;
 pub mod cli;
 pub mod client;

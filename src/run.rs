@@ -8,10 +8,11 @@ use std::fmt;
 
 use tokio::sync::mpsc;
 
+use crate::apply::{Applied, Applier, LabelChange};
 use crate::classifier::{self, Decision};
 use crate::client::{ClientError, EmailClient, MessageId, MessageMeta};
 use crate::config::Config;
-use crate::db::{Db, DbError, RunCounts, RunKind};
+use crate::db::{Db, DbError, RunKind};
 
 /// Ids per metadata request.
 const BATCH_SIZE: usize = 50;
@@ -25,7 +26,7 @@ pub struct RunOptions {
     pub full: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunSummary {
     pub run_id: i64,
     pub kind: RunKind,
@@ -33,6 +34,8 @@ pub struct RunSummary {
     pub labelled: u64,
     pub filters_changed: u64,
     pub unknown: u64,
+    /// The label changes a dry run would make; empty otherwise.
+    pub planned: Vec<LabelChange>,
 }
 
 impl fmt::Display for RunSummary {
@@ -103,11 +106,12 @@ pub async fn execute<C: EmailClient>(
     let (meta_tx, meta_rx) = mpsc::channel(CHANNEL_CAPACITY);
     let (decision_tx, decision_rx) = mpsc::channel(CHANNEL_CAPACITY);
 
-    let (cursor_after, (), (), counts) = tokio::try_join!(
+    let applier = Applier::new(client, db, run_id, options.dry_run).await?;
+    let (cursor_after, (), (), Applied { counts, planned }) = tokio::try_join!(
         lister(client, cursor_before.as_ref(), id_tx),
         fetcher(client, id_rx, meta_tx),
         classifier_stage(config, meta_rx, decision_tx),
-        applier(decision_rx),
+        applier_stage(applier, decision_rx),
     )?;
 
     db.finish_run(run_id, &cursor_after.to_string(), counts)
@@ -120,6 +124,7 @@ pub async fn execute<C: EmailClient>(
         labelled: counts.labelled,
         filters_changed: counts.filters_changed,
         unknown: counts.unknown,
+        planned,
     })
 }
 
@@ -156,25 +161,24 @@ async fn fetcher<C: EmailClient>(
 async fn classifier_stage(
     config: &Config,
     mut metas: mpsc::Receiver<MessageMeta>,
-    decisions: mpsc::Sender<Decision>,
+    decisions: mpsc::Sender<(MessageMeta, Decision)>,
 ) -> Result<(), RunError> {
     while let Some(meta) = metas.recv().await {
         let decision = classifier::classify(config, &meta);
         decisions
-            .send(decision)
+            .send((meta, decision))
             .await
             .map_err(|_| RunError::StageStopped("applier"))?;
     }
     Ok(())
 }
 
-/// Counts the Decisions that came out Unknown.
-async fn applier(mut decisions: mpsc::Receiver<Decision>) -> Result<RunCounts, RunError> {
-    let mut counts = RunCounts::default();
-    while let Some(decision) = decisions.recv().await {
-        if decision.is_unknown() {
-            counts.unknown += 1;
-        }
+async fn applier_stage<C: EmailClient>(
+    mut applier: Applier<'_, C>,
+    mut decisions: mpsc::Receiver<(MessageMeta, Decision)>,
+) -> Result<Applied, RunError> {
+    while let Some((meta, decision)) = decisions.recv().await {
+        applier.apply(&meta, &decision).await?;
     }
-    Ok(counts)
+    Ok(applier.finish())
 }
