@@ -37,6 +37,17 @@ fn dry_run_and_apply_contradict_each_other() {
 }
 
 #[test]
+fn a_limit_is_only_allowed_on_a_dry_run() {
+    let output = mailscrub()
+        .args(["run", "--limit", "500"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--dry-run"));
+}
+
+#[test]
 fn the_other_subcommands_exist_but_are_not_implemented_yet() {
     for args in [&["review"][..], &["refresh", "chase.com"], &["status"]] {
         let output = mailscrub().args(args).output().unwrap();

@@ -24,7 +24,7 @@ const BASE_URL: &str = "https://gmail.googleapis.com";
 /// Gmail allows roughly ten concurrent requests per user, and `messages.get`
 /// costs 5 of the 250 quota units available each second.
 const MAX_IN_FLIGHT: usize = 8;
-const PAGE_SIZE: &str = "500";
+const PAGE_SIZE: usize = 500;
 /// Request starts are spaced this far apart: 40 a second is 200 of the 250
 /// units, even if every request were a `messages.get`.
 const REQUEST_INTERVAL: Duration = Duration::from_millis(25);
@@ -302,7 +302,7 @@ impl RawMessage {
 
 /// `Chase <billing@email.chase.com>` → `billing@email.chase.com`. The last
 /// angle-bracket pair wins so a display name containing `<` cannot confuse it.
-fn bare_address(from: &str) -> String {
+pub fn bare_address(from: &str) -> String {
     let inner = match (from.rfind('<'), from.rfind('>')) {
         (Some(open), Some(close)) if open < close => &from[open + 1..close],
         _ => from,
@@ -341,6 +341,7 @@ impl EmailClient for GmailClient {
     async fn changes_since(
         &self,
         _cursor: Option<&GmailCursor>,
+        limit: Option<usize>,
     ) -> Result<Changes<GmailCursor>, ClientError> {
         let profile: Profile = self.json(|| self.request(Method::GET, "/profile")).await?;
         let cursor = profile
@@ -349,14 +350,16 @@ impl EmailClient for GmailClient {
             .map_err(|_| GmailError::Malformed(format!("history id {:?}", profile.history_id)))?;
 
         // Spam and Trash are left out (`includeSpamTrash` defaults to false):
-        // nothing there is worth labelling.
+        // nothing there is worth labelling. Gmail lists newest first.
+        let limit = limit.unwrap_or(usize::MAX);
         let mut ids = Vec::new();
         let mut page_token: Option<String> = None;
-        loop {
+        while ids.len() < limit {
+            let page_size = PAGE_SIZE.min(limit - ids.len()).to_string();
             let page: MessageList = self
                 .json(|| {
                     let mut request = self.request(Method::GET, "/messages").query(&[
-                        ("maxResults", PAGE_SIZE),
+                        ("maxResults", page_size.as_str()),
                         ("fields", "messages/id,nextPageToken"),
                     ]);
                     if let Some(token) = &page_token {
@@ -371,6 +374,7 @@ impl EmailClient for GmailClient {
                 None => break,
             }
         }
+        ids.truncate(limit);
         Ok(Changes {
             ids,
             cursor: GmailCursor(cursor),

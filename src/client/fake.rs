@@ -160,13 +160,16 @@ impl EmailClient for FakeClient {
     async fn changes_since(
         &self,
         cursor: Option<&FakeCursor>,
+        limit: Option<usize>,
     ) -> Result<Changes<FakeCursor>, ClientError> {
         let state = self.state();
         let after = cursor.map_or(0, |c| c.0);
         let ids = state
             .messages
             .iter()
+            .rev()
             .filter(|(seq, _)| *seq > after)
+            .take(limit.unwrap_or(usize::MAX))
             .map(|(_, m)| m.id.clone())
             .collect();
         Ok(Changes {

@@ -3,7 +3,7 @@ use sqlx::Row;
 use sqlx::sqlite::SqlitePool;
 
 #[tokio::test]
-async fn opening_creates_the_file_with_every_table_and_is_repeatable() {
+async fn opening_creates_the_file_with_its_tables_and_is_repeatable() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("nested").join("mailscrub.db");
 
@@ -23,15 +23,5 @@ async fn opening_creates_the_file_with_every_table_and_is_repeatable() {
     .iter()
     .map(|r| r.get("name"))
     .collect();
-    assert_eq!(
-        tables,
-        [
-            "decision",
-            "domain_cache",
-            "filter",
-            "message",
-            "pin",
-            "run"
-        ]
-    );
+    assert_eq!(tables, ["decision", "run"]);
 }

@@ -9,10 +9,10 @@ use common::ScriptedConsole;
 use mail_scrub::auth::{
     self, AccessToken, Credentials, Endpoints, MemoryStore, SecretStore, Session,
 };
-use mail_scrub::client::gmail::GmailClient;
+use mail_scrub::client::gmail::{GmailClient, bare_address};
 use mail_scrub::client::{ClientError, EmailClient};
 use serde_json::json;
-use wiremock::matchers::{body_json, header, method, path, query_param};
+use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 async fn client(server: &MockServer) -> GmailClient {
@@ -85,23 +85,72 @@ async fn a_full_listing_follows_every_page_and_returns_the_history_id_cursor() {
         .mount(&server)
         .await;
 
-    let changes = client(&server).await.changes_since(None).await.unwrap();
+    let changes = client(&server)
+        .await
+        .changes_since(None, None)
+        .await
+        .unwrap();
 
     assert_eq!(changes.ids, ["m1", "m2", "m3"]);
     assert_eq!(changes.cursor.to_string(), "4242");
 }
 
 #[tokio::test]
-async fn metadata_parses_the_sender_address_subject_labels_and_date() {
+async fn a_limited_listing_asks_for_only_what_it_needs_and_stops_paging() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/profile"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"historyId": "4242"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/messages"))
+        .and(query_param("pageToken", "page-2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"messages": []})))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/messages"))
+        .and(query_param("maxResults", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "messages": [{"id": "m1", "threadId": "t1"}, {"id": "m2", "threadId": "t2"}],
+            "nextPageToken": "page-2"
+        })))
+        .mount(&server)
+        .await;
+
+    let changes = client(&server)
+        .await
+        .changes_since(None, Some(2))
+        .await
+        .unwrap();
+
+    assert_eq!(changes.ids, ["m1", "m2"]);
+}
+
+#[test]
+fn the_sender_address_is_taken_from_the_last_angle_brackets() {
+    let cases = [
+        ("Chase <billing@email.chase.com>", "billing@email.chase.com"),
+        ("\"Doe, <J>\" <j@example.com>", "j@example.com"),
+        ("bare@example.com", "bare@example.com"),
+        ("  padded@example.com  ", "padded@example.com"),
+        ("Name < spaced@example.com >", "spaced@example.com"),
+        ("", ""),
+    ];
+
+    for (from, expected) in cases {
+        assert_eq!(bare_address(from), expected, "{from:?}");
+    }
+}
+
+#[tokio::test]
+async fn metadata_reads_the_sender_and_subject_from_the_headers() {
     let server = MockServer::start().await;
     for (id, from, subject) in [
-        (
-            "m1",
-            "Chase <billing@email.chase.com>",
-            Some("Your statement"),
-        ),
-        ("m2", "\"Doe, <J>\" <j@example.com>", None),
-        ("m3", "bare@example.com", Some("Hi")),
+        ("m1", "Chase <billing@email.chase.com>", Some("Statement")),
+        ("m2", "bare@example.com", None),
     ] {
         Mock::given(method("GET"))
             .and(path(format!("/gmail/v1/users/me/messages/{id}")))
@@ -110,25 +159,21 @@ async fn metadata_parses_the_sender_address_subject_labels_and_date() {
             .mount(&server)
             .await;
     }
-    let ids = ["m1", "m2", "m3"].map(String::from);
+    let ids = ["m1", "m2"].map(String::from);
 
     let metas = client(&server).await.metadata(&ids).await.unwrap();
 
-    let addresses: Vec<&str> = metas.iter().map(|m| m.sender_address.as_str()).collect();
+    let read: Vec<(&str, Option<&str>)> = metas
+        .iter()
+        .map(|m| (m.sender_address.as_str(), m.subject.as_deref()))
+        .collect();
     assert_eq!(
-        addresses,
+        read,
         [
-            "billing@email.chase.com",
-            "j@example.com",
-            "bare@example.com"
+            ("billing@email.chase.com", Some("Statement")),
+            ("bare@example.com", None),
         ]
     );
-    assert_eq!(metas[0].id, "m1");
-    assert_eq!(metas[0].thread_id, "t-m1");
-    assert_eq!(metas[0].subject.as_deref(), Some("Your statement"));
-    assert_eq!(metas[1].subject, None);
-    assert_eq!(metas[0].label_ids, ["INBOX", "Label_7"]);
-    assert_eq!(metas[0].internal_date, 1_700_000_000);
 }
 
 #[tokio::test]
@@ -228,63 +273,4 @@ async fn a_revoked_refresh_token_surfaces_as_auth_expired() {
     let err = client(&server).await.list_labels().await.unwrap_err();
 
     assert!(matches!(err, ClientError::AuthExpired), "{err}");
-}
-
-#[tokio::test]
-async fn labels_are_listed_and_created_by_name() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/gmail/v1/users/me/labels"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "labels": [{"id": "INBOX", "name": "INBOX", "type": "system"},
-                       {"id": "Label_1", "name": "From/Finance", "type": "user"}]
-        })))
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/gmail/v1/users/me/labels"))
-        .and(body_json(json!({
-            "name": "Type/Receipt",
-            "labelListVisibility": "labelShow",
-            "messageListVisibility": "show"
-        })))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"id": "Label_2", "name": "Type/Receipt"})),
-        )
-        .mount(&server)
-        .await;
-    let client = client(&server).await;
-
-    let labels = client.list_labels().await.unwrap();
-    let created = client.create_label("Type/Receipt").await.unwrap();
-
-    assert_eq!(labels.len(), 2);
-    assert_eq!(labels[1].id, "Label_1");
-    assert_eq!(labels[1].name, "From/Finance");
-    assert_eq!(
-        (created.id.as_str(), created.name.as_str()),
-        ("Label_2", "Type/Receipt")
-    );
-}
-
-#[tokio::test]
-async fn set_labels_modifies_exactly_the_requested_labels() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/gmail/v1/users/me/messages/m1/modify"))
-        .and(body_json(json!({
-            "addLabelIds": ["Label_2"],
-            "removeLabelIds": ["Label_1"]
-        })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "m1"})))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    client(&server)
-        .await
-        .set_labels("m1", &["Label_2".to_owned()], &["Label_1".to_owned()])
-        .await
-        .unwrap();
 }

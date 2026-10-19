@@ -72,10 +72,12 @@ pub trait EmailClient: Send + Sync {
     /// Opaque, provider-specific filter criteria.
     type FilterCriteria: Clone + Send + Sync + fmt::Debug + PartialEq;
 
-    /// Ids of messages new or changed since `cursor`; all messages when `None`.
+    /// Ids of messages new or changed since `cursor`, all messages when
+    /// `None`, newest first. At most `limit` ids when given.
     fn changes_since(
         &self,
         cursor: Option<&Self::Cursor>,
+        limit: Option<usize>,
     ) -> impl Future<Output = Result<Changes<Self::Cursor>, ClientError>> + Send;
 
     /// Metadata for a batch of ids.

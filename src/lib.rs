@@ -22,5 +22,6 @@ pub mod client;
 pub mod config;
 pub mod console;
 pub mod db;
+pub mod progress;
 pub mod run;
 pub mod setup;

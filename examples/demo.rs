@@ -17,6 +17,7 @@ use mail_scrub::client::fake::FakeClient;
 use mail_scrub::config::Config;
 use mail_scrub::db::Db;
 use mail_scrub::run::{self, RunOptions};
+use tokio::sync::mpsc;
 
 fn message(id: &str, from: &str, subject: &str, labels: Vec<String>) -> MessageMeta {
     MessageMeta {
@@ -107,9 +108,11 @@ async fn main() -> anyhow::Result<()> {
             dry_run,
             ..RunOptions::default()
         },
+        mpsc::unbounded_channel().0,
     )
     .await?;
 
+    // A dry run stores no Decisions, so this section is empty for one.
     println!("\nDecisions:");
     for record in db.decisions().await? {
         let d = &record.decision;

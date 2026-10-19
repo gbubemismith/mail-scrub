@@ -85,7 +85,9 @@ impl<'a, C: EmailClient> Applier<'a, C> {
         })
     }
 
-    /// Apply one Decision, then record it. Unknowns change nothing.
+    /// Apply one Decision, then record it. Unknowns change nothing. A dry run
+    /// only plans: the stored Decision must keep matching the labels actually
+    /// in the mailbox, because Pins are detected against it.
     ///
     /// # Errors
     ///
@@ -101,9 +103,9 @@ impl<'a, C: EmailClient> Applier<'a, C> {
                 self.write(&change).await?;
             }
         }
-        self.db
-            .record_decision(self.run_id, meta, decision, !self.dry_run)
-            .await?;
+        if !self.dry_run {
+            self.db.record_decision(self.run_id, decision).await?;
+        }
         Ok(())
     }
 

@@ -13,6 +13,7 @@ mailscrub setup              # one-off: three steps to create your Google Cloud 
 mailscrub run                # one Run; the very first one is a dry run
 mailscrub run --apply        # write labels even on the first Run
 mailscrub run --dry-run      # print planned label changes, write nothing, don't advance the cursor
+mailscrub run --dry-run --limit 500   # preview only the 500 newest messages
 mailscrub run --full         # ignore the stored cursor
 cargo run --example demo -- examples/demo.toml [--dry-run]   # seeded fake mailbox: edit the TOML, rerun, see labels
 ```

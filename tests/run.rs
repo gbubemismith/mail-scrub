@@ -5,16 +5,29 @@ use mail_scrub::client::MessageMeta;
 use mail_scrub::client::fake::{FakeClient, Mutation};
 use mail_scrub::config::Config;
 use mail_scrub::db::{Db, RunKind};
+use mail_scrub::progress::{Progress, ProgressSender};
 use mail_scrub::run::{self, RunOptions};
+use tokio::sync::mpsc;
+
+/// For a Run whose progress the test does not look at.
+fn unwatched() -> ProgressSender {
+    mpsc::unbounded_channel().0
+}
 
 #[tokio::test]
 async fn run_on_an_empty_mailbox_changes_nothing_and_records_one_run() {
     let client = FakeClient::new();
     let db = Db::open_in_memory().await.unwrap();
 
-    let summary = run::execute(&client, &db, &Config::default(), RunOptions::default())
-        .await
-        .unwrap();
+    let summary = run::execute(
+        &client,
+        &db,
+        &Config::default(),
+        RunOptions::default(),
+        unwatched(),
+    )
+    .await
+    .unwrap();
 
     assert!(client.mutations().is_empty());
     assert_eq!(summary.labelled, 0);
@@ -43,9 +56,15 @@ async fn messages_that_cannot_be_decided_are_counted_unknown_and_left_untouched(
     client.add_message(message("m2"));
     let db = Db::open_in_memory().await.unwrap();
 
-    let summary = run::execute(&client, &db, &Config::default(), RunOptions::default())
-        .await
-        .unwrap();
+    let summary = run::execute(
+        &client,
+        &db,
+        &Config::default(),
+        RunOptions::default(),
+        unwatched(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(summary.unknown, 2);
     assert_eq!(summary.labelled, 0);
@@ -61,11 +80,11 @@ async fn a_second_run_resumes_from_the_stored_cursor() {
     let db = Db::open_in_memory().await.unwrap();
     let config = Config::default();
 
-    let first = run::execute(&client, &db, &config, RunOptions::default())
+    let first = run::execute(&client, &db, &config, RunOptions::default(), unwatched())
         .await
         .unwrap();
     client.add_message(message("m2"));
-    let second = run::execute(&client, &db, &config, RunOptions::default())
+    let second = run::execute(&client, &db, &config, RunOptions::default(), unwatched())
         .await
         .unwrap();
 
@@ -89,7 +108,7 @@ async fn a_full_run_ignores_the_stored_cursor() {
     client.add_message(message("m1"));
     let db = Db::open_in_memory().await.unwrap();
     let config = Config::default();
-    run::execute(&client, &db, &config, RunOptions::default())
+    run::execute(&client, &db, &config, RunOptions::default(), unwatched())
         .await
         .unwrap();
 
@@ -97,7 +116,9 @@ async fn a_full_run_ignores_the_stored_cursor() {
         full: true,
         ..RunOptions::default()
     };
-    let again = run::execute(&client, &db, &config, options).await.unwrap();
+    let again = run::execute(&client, &db, &config, options, unwatched())
+        .await
+        .unwrap();
 
     assert_eq!(again.kind, RunKind::Full);
     assert_eq!(again.unknown, 1);
@@ -114,8 +135,10 @@ async fn a_dry_run_does_not_advance_the_cursor() {
         dry_run: true,
         ..RunOptions::default()
     };
-    let preview = run::execute(&client, &db, &config, dry).await.unwrap();
-    let real = run::execute(&client, &db, &config, RunOptions::default())
+    let preview = run::execute(&client, &db, &config, dry, unwatched())
+        .await
+        .unwrap();
+    let real = run::execute(&client, &db, &config, RunOptions::default(), unwatched())
         .await
         .unwrap();
 
@@ -174,7 +197,7 @@ async fn a_message_matching_both_overrides_gets_one_from_and_one_type_label() {
     let db = Db::open_in_memory().await.unwrap();
     let config = config_with_overrides(SHIPPING_OVERRIDES);
 
-    let summary = run::execute(&client, &db, &config, RunOptions::default())
+    let summary = run::execute(&client, &db, &config, RunOptions::default(), unwatched())
         .await
         .unwrap();
 
@@ -194,7 +217,7 @@ async fn decisions_record_the_signal_and_source_that_fired() {
     let db = Db::open_in_memory().await.unwrap();
     let config = config_with_overrides(SHIPPING_OVERRIDES);
 
-    let summary = run::execute(&client, &db, &config, RunOptions::default())
+    let summary = run::execute(&client, &db, &config, RunOptions::default(), unwatched())
         .await
         .unwrap();
 
@@ -210,7 +233,6 @@ async fn decisions_record_the_signal_and_source_that_fired() {
     assert_eq!(email_type.signal, Signal::Address);
     assert_eq!(email_type.signal_key, "ship-confirm@amazon.com");
     assert_eq!(known.run_id, summary.run_id);
-    assert!(known.applied);
 
     let unknown = &decisions[1];
     assert_eq!(unknown.decision.message_id, "m2");
@@ -237,7 +259,7 @@ type = "Receipt"
 "#,
     );
 
-    run::execute(&client, &db, &config, RunOptions::default())
+    run::execute(&client, &db, &config, RunOptions::default(), unwatched())
         .await
         .unwrap();
 
@@ -257,7 +279,7 @@ async fn a_message_known_on_one_dimension_only_is_left_untouched() {
     let db = Db::open_in_memory().await.unwrap();
     let config = config_with_overrides(SHIPPING_OVERRIDES);
 
-    let summary = run::execute(&client, &db, &config, RunOptions::default())
+    let summary = run::execute(&client, &db, &config, RunOptions::default(), unwatched())
         .await
         .unwrap();
 
@@ -280,7 +302,7 @@ async fn owned_labels_are_created_only_when_absent() {
     let db = Db::open_in_memory().await.unwrap();
     let config = config_with_overrides(SHIPPING_OVERRIDES);
 
-    run::execute(&client, &db, &config, RunOptions::default())
+    run::execute(&client, &db, &config, RunOptions::default(), unwatched())
         .await
         .unwrap();
 
@@ -309,7 +331,7 @@ async fn a_stale_owned_label_is_replaced_and_labels_outside_the_prefixes_are_kep
     let db = Db::open_in_memory().await.unwrap();
     let config = config_with_overrides(SHIPPING_OVERRIDES);
 
-    run::execute(&client, &db, &config, RunOptions::default())
+    run::execute(&client, &db, &config, RunOptions::default(), unwatched())
         .await
         .unwrap();
 
@@ -336,7 +358,7 @@ async fn a_message_already_labelled_correctly_is_not_written_again() {
     let db = Db::open_in_memory().await.unwrap();
     let config = config_with_overrides(SHIPPING_OVERRIDES);
 
-    let summary = run::execute(&client, &db, &config, RunOptions::default())
+    let summary = run::execute(&client, &db, &config, RunOptions::default(), unwatched())
         .await
         .unwrap();
 
@@ -360,7 +382,9 @@ async fn a_dry_run_plans_every_add_and_remove_and_writes_nothing_to_the_mailbox(
         ..RunOptions::default()
     };
 
-    let summary = run::execute(&client, &db, &config, options).await.unwrap();
+    let summary = run::execute(&client, &db, &config, options, unwatched())
+        .await
+        .unwrap();
 
     assert!(client.mutations().is_empty(), "no labels created or set");
     assert_eq!(label_names(&client, "m1"), ["From/Finance", "INBOX"]);
@@ -383,8 +407,52 @@ async fn a_dry_run_plans_every_add_and_remove_and_writes_nothing_to_the_mailbox(
             "m1: remove From/Finance",
         ]
     );
-    let record = &db.decisions().await.unwrap()[0];
-    assert!(!record.applied, "a dry-run Decision is marked unapplied");
+    assert!(
+        db.decisions().await.unwrap().is_empty(),
+        "a dry run stores no Decisions"
+    );
+}
+
+#[tokio::test]
+async fn a_dry_run_leaves_the_last_applied_decision_in_place() {
+    let client = FakeClient::new();
+    client.add_message(amazon_shipping("m1"));
+    let db = Db::open_in_memory().await.unwrap();
+    run::execute(
+        &client,
+        &db,
+        &config_with_overrides(SHIPPING_OVERRIDES),
+        RunOptions::default(),
+        unwatched(),
+    )
+    .await
+    .unwrap();
+
+    let edited = config_with_overrides(
+        r#"
+[overrides.sender]
+"amazon.com" = "Finance"
+
+[[overrides.type]]
+address = "ship-confirm@amazon.com"
+type = "Shipping"
+"#,
+    );
+    let preview = RunOptions {
+        dry_run: true,
+        full: true,
+        ..RunOptions::default()
+    };
+    run::execute(&client, &db, &edited, preview, unwatched())
+        .await
+        .unwrap();
+
+    let stored = &db.decisions().await.unwrap()[0].decision;
+    assert_eq!(
+        stored.sender_category,
+        Some(("Shopping".to_owned(), Source::Override)),
+        "the Decision still matches the labels actually in the mailbox"
+    );
 }
 
 #[tokio::test]
@@ -401,6 +469,7 @@ async fn editing_the_overrides_and_running_again_changes_the_result() {
         &db,
         &config_with_overrides(SHIPPING_OVERRIDES),
         full,
+        unwatched(),
     )
     .await
     .unwrap();
@@ -415,11 +484,84 @@ address = "ship-confirm@amazon.com"
 type = "Receipt"
 "#,
     );
-    run::execute(&client, &db, &edited, full).await.unwrap();
+    run::execute(&client, &db, &edited, full, unwatched())
+        .await
+        .unwrap();
 
     assert_eq!(
         label_names(&client, "m1"),
         ["From/Finance", "INBOX", "Type/Receipt"]
+    );
+}
+
+#[tokio::test]
+async fn a_run_reports_how_many_messages_it_found_and_each_one_it_finishes() {
+    let client = FakeClient::new();
+    client.add_message(message("m1"));
+    client.add_message(amazon_shipping("m2"));
+    client.add_message(message("m3"));
+    let db = Db::open_in_memory().await.unwrap();
+    let (progress, mut events) = mpsc::unbounded_channel();
+
+    run::execute(
+        &client,
+        &db,
+        &config_with_overrides(SHIPPING_OVERRIDES),
+        RunOptions::default(),
+        progress,
+    )
+    .await
+    .unwrap();
+
+    let mut reported = Vec::new();
+    while let Some(event) = events.recv().await {
+        reported.push(event);
+    }
+    assert_eq!(
+        reported,
+        [
+            Progress::Listing,
+            Progress::Listed(3),
+            Progress::Processed(1),
+            Progress::Processed(2),
+            Progress::Processed(3),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_limited_dry_run_visits_only_the_newest_messages_and_is_not_the_preview() {
+    let client = FakeClient::new();
+    for id in ["m1", "m2", "m3"] {
+        client.add_message(amazon_shipping(id));
+    }
+    let db = Db::open_in_memory().await.unwrap();
+    let sample = RunOptions {
+        dry_run: true,
+        limit: Some(2),
+        ..RunOptions::default()
+    };
+
+    let summary = run::execute(
+        &client,
+        &db,
+        &config_with_overrides(SHIPPING_OVERRIDES),
+        sample,
+        unwatched(),
+    )
+    .await
+    .unwrap();
+
+    let mut visited: Vec<&str> = summary
+        .planned
+        .iter()
+        .map(|c| c.message_id.as_str())
+        .collect();
+    visited.sort_unstable();
+    assert_eq!(visited, ["m2", "m3"]);
+    assert!(
+        run::resolve_dry_run(&db, false, false).await.unwrap(),
+        "a sample does not stand in for previewing the whole mailbox"
     );
 }
 
@@ -443,7 +585,9 @@ async fn after_a_finished_run_plain_runs_apply_and_an_explicit_dry_run_still_pre
         dry_run: true,
         ..RunOptions::default()
     };
-    run::execute(&client, &db, &config, dry).await.unwrap();
+    run::execute(&client, &db, &config, dry, unwatched())
+        .await
+        .unwrap();
 
     assert!(
         !run::resolve_dry_run(&db, false, false).await.unwrap(),

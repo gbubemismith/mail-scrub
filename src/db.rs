@@ -7,8 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use sqlx::Row;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 
-use crate::classifier::{Decision, Signal, Source, TypeDecision, sender_host};
-use crate::client::MessageMeta;
+use crate::classifier::{Decision, Signal, Source, TypeDecision};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
@@ -65,19 +64,18 @@ pub struct RunRecord {
     pub started_at: i64,
     pub kind: RunKind,
     pub cursor_before: Option<String>,
-    /// `None` until the Run finishes, so an interrupted Run is visible.
+    /// `None` until the Run finishes, so an interrupted Run is visible. Also
+    /// `None` for a sample, which visited only the newest messages.
     pub cursor_after: Option<String>,
     pub counts: RunCounts,
     pub dry_run: bool,
 }
 
-/// A stored Decision and whether its labels were written to the mailbox.
+/// A stored Decision and the Run that applied it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecisionRecord {
     pub decision: Decision,
     pub run_id: i64,
-    /// `false` for a dry run, which records what it would have done.
-    pub applied: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -154,7 +152,8 @@ impl Db {
         Ok(result.last_insert_rowid())
     }
 
-    /// Record how a Run ended.
+    /// Record how a Run ended. `cursor_after` is `None` for a Run with no
+    /// point to resume from.
     ///
     /// # Errors
     ///
@@ -162,7 +161,7 @@ impl Db {
     pub async fn finish_run(
         &self,
         run_id: i64,
-        cursor_after: &str,
+        cursor_after: Option<&str>,
         counts: RunCounts,
     ) -> Result<(), DbError> {
         sqlx::query(
@@ -178,33 +177,16 @@ impl Db {
         Ok(())
     }
 
-    /// Store the message and its Decision, replacing any earlier Decision.
+    /// Store an applied Decision, replacing any earlier one for the message.
     ///
     /// # Errors
     ///
-    /// Returns an error if the writes fail.
-    pub async fn record_decision(
-        &self,
-        run_id: i64,
-        message: &MessageMeta,
-        decision: &Decision,
-        applied: bool,
-    ) -> Result<(), DbError> {
-        let mut tx = self.pool.begin().await?;
-        sqlx::query(
-            "INSERT INTO message (id, sender_address, sender_domain) VALUES (?, ?, ?) \
-             ON CONFLICT (id) DO UPDATE SET sender_address = excluded.sender_address, \
-             sender_domain = excluded.sender_domain",
-        )
-        .bind(&message.id)
-        .bind(&message.sender_address)
-        .bind(sender_host(&message.sender_address))
-        .execute(&mut *tx)
-        .await?;
+    /// Returns an error if the write fails.
+    pub async fn record_decision(&self, run_id: i64, decision: &Decision) -> Result<(), DbError> {
         sqlx::query(
             "INSERT OR REPLACE INTO decision \
-             (message_id, sender_category, sender_source, email_type, type_signal, signal_key, run_id, applied) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             (message_id, sender_category, sender_source, email_type, type_signal, signal_key, run_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&decision.message_id)
         .bind(decision.sender_category.as_ref().map(|(c, _)| c))
@@ -213,10 +195,8 @@ impl Db {
         .bind(decision.email_type.as_ref().map(|t| t.signal.as_str()))
         .bind(decision.email_type.as_ref().map(|t| &t.signal_key))
         .bind(run_id)
-        .bind(applied)
-        .execute(&mut *tx)
+        .execute(&self.pool)
         .await?;
-        tx.commit().await?;
         Ok(())
     }
 
@@ -307,6 +287,5 @@ fn decision_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<DecisionRecord, DbEr
             email_type,
         },
         run_id: r.get("run_id"),
-        applied: r.get("applied"),
     })
 }

@@ -6,12 +6,14 @@ use std::sync::Arc;
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
+use tokio::sync::mpsc;
 
 use crate::auth::{self, Endpoints, Keychain};
 use crate::client::gmail::GmailClient;
 use crate::config::{self, Config};
 use crate::console::Terminal;
 use crate::db::Db;
+use crate::progress;
 use crate::run::{self, RunOptions};
 use crate::setup;
 
@@ -46,6 +48,9 @@ enum Command {
         /// Walk the whole mailbox instead of resuming from the last Run
         #[arg(long)]
         full: bool,
+        /// Preview only the N newest messages
+        #[arg(long, value_name = "N", requires = "dry_run")]
+        limit: Option<usize>,
     },
     /// Answer outstanding questions without a full Run
     Review,
@@ -68,7 +73,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             dry_run,
             apply,
             full,
-        } => run_command(cli.config, dry_run, apply, full).await,
+            limit,
+        } => run_command(cli.config, dry_run, apply, full, limit).await,
         Command::Setup => {
             let path = config_path(cli.config)?;
             let downloads = downloads_dir()?;
@@ -93,6 +99,7 @@ async fn run_command(
     dry_run: bool,
     apply: bool,
     full: bool,
+    limit: Option<usize>,
 ) -> anyhow::Result<()> {
     let explicit = explicit_config.is_some();
     let path = config_path(explicit_config)?;
@@ -126,13 +133,30 @@ async fn run_command(
         eprintln!("note: first Run, previewing only; pass --apply to write labels");
     }
     let dry_run = previewing;
-    let summary = run::execute(
-        &GmailClient::new(session),
-        &db,
-        &config,
-        RunOptions { dry_run, full },
-    )
-    .await?;
+    let client = GmailClient::new(session);
+    let (progress, events) = mpsc::unbounded_channel();
+    let printer = async move {
+        // Left out when stderr is not a terminal so logs get no redraws.
+        if std::io::stderr().is_terminal() {
+            progress::print_terminal(events).await;
+        }
+    };
+    // Joined, not spawned, so the progress line has ended before the plan prints.
+    let (summary, ()) = tokio::join!(
+        run::execute(
+            &client,
+            &db,
+            &config,
+            RunOptions {
+                dry_run,
+                full,
+                limit,
+            },
+            progress,
+        ),
+        printer,
+    );
+    let summary = summary?;
     for change in &summary.planned {
         println!("{change}");
     }

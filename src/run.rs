@@ -13,6 +13,7 @@ use crate::classifier::{self, Decision};
 use crate::client::{ClientError, EmailClient, MessageId, MessageMeta};
 use crate::config::Config;
 use crate::db::{Db, DbError, RunKind};
+use crate::progress::{Progress, ProgressSender, report};
 
 /// Ids per metadata request.
 const BATCH_SIZE: usize = 50;
@@ -24,6 +25,9 @@ pub struct RunOptions {
     pub dry_run: bool,
     /// Ignore the stored cursor and walk the whole mailbox.
     pub full: bool,
+    /// Visit only this many of the newest messages: a sample, so it records
+    /// no cursor and does not count as the first-Run preview.
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,7 +87,8 @@ pub async fn resolve_dry_run(db: &Db, dry_run: bool, apply: bool) -> Result<bool
     Ok(db.runs().await?.iter().all(|r| r.cursor_after.is_none()))
 }
 
-/// Perform one Run against `client`, recording it in `db`.
+/// Perform one Run against `client`, recording it in `db`. Progress goes to
+/// `progress`, which is dropped when the Run ends, closing the channel.
 ///
 /// # Errors
 ///
@@ -95,6 +100,7 @@ pub async fn execute<C: EmailClient>(
     db: &Db,
     config: &Config,
     options: RunOptions,
+    progress: ProgressSender,
 ) -> Result<RunSummary, RunError> {
     let stored = if options.full {
         None
@@ -126,13 +132,21 @@ pub async fn execute<C: EmailClient>(
 
     let applier = Applier::new(client, db, run_id, options.dry_run).await?;
     let (cursor_after, (), (), Applied { counts, planned }) = tokio::try_join!(
-        lister(client, cursor_before.as_ref(), id_tx),
+        lister(
+            client,
+            cursor_before.as_ref(),
+            options.limit,
+            id_tx,
+            progress.clone()
+        ),
         fetcher(client, id_rx, meta_tx),
         classifier_stage(config, meta_rx, decision_tx),
-        applier_stage(applier, decision_rx),
+        applier_stage(applier, decision_rx, progress),
     )?;
 
-    db.finish_run(run_id, &cursor_after.to_string(), counts)
+    // A sample skipped older mail, so its cursor is no place to resume from.
+    let cursor_after = options.limit.is_none().then(|| cursor_after.to_string());
+    db.finish_run(run_id, cursor_after.as_deref(), counts)
         .await?;
 
     Ok(RunSummary {
@@ -149,9 +163,13 @@ pub async fn execute<C: EmailClient>(
 async fn lister<C: EmailClient>(
     client: &C,
     cursor: Option<&C::Cursor>,
+    limit: Option<usize>,
     ids: mpsc::Sender<Vec<MessageId>>,
+    progress: ProgressSender,
 ) -> Result<C::Cursor, RunError> {
-    let changes = client.changes_since(cursor).await?;
+    report(&progress, Progress::Listing);
+    let changes = client.changes_since(cursor, limit).await?;
+    report(&progress, Progress::Listed(changes.ids.len()));
     for batch in changes.ids.chunks(BATCH_SIZE) {
         ids.send(batch.to_vec())
             .await
@@ -194,9 +212,13 @@ async fn classifier_stage(
 async fn applier_stage<C: EmailClient>(
     mut applier: Applier<'_, C>,
     mut decisions: mpsc::Receiver<(MessageMeta, Decision)>,
+    progress: ProgressSender,
 ) -> Result<Applied, RunError> {
+    let mut done = 0;
     while let Some((meta, decision)) = decisions.recv().await {
         applier.apply(&meta, &decision).await?;
+        done += 1;
+        report(&progress, Progress::Processed(done));
     }
     Ok(applier.finish())
 }
