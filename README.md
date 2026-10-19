@@ -9,11 +9,21 @@ It then writes Gmail filters for every decision Gmail can reproduce exactly, so 
 ## Usage
 
 ```sh
-cargo run -- run             # one Run against the in-memory fake
-cargo run -- run --dry-run   # print planned label changes, write nothing, don't advance the cursor
-cargo run -- run --full      # ignore the stored cursor
+mailscrub setup              # one-off: three steps to create your Google Cloud OAuth client, then sign in and store tokens in the keychain
+mailscrub run                # one Run; the very first one is a dry run
+mailscrub run --apply        # write labels even on the first Run
+mailscrub run --dry-run      # print planned label changes, write nothing, don't advance the cursor
+mailscrub run --full         # ignore the stored cursor
 cargo run --example demo -- examples/demo.toml [--dry-run]   # seeded fake mailbox: edit the TOML, rerun, see labels
 ```
+
+`setup` takes three steps, opening the Google Cloud console page for each with a one-line instruction: create a project and enable the Gmail API, set up the consent screen and publish the app, then create a "Desktop app" OAuth client and click Download JSON. It reads the client ID and secret from that downloaded file (looking in `~/Downloads`, or asking for the path), then runs the consent flow. The OAuth client secret, refresh token and access token go in the OS keychain; the config file gets only the client ID, and is created readable by you alone. You can delete the downloaded JSON afterwards. No Cloudflare account is needed.
+
+Because the app is your own and unverified, Google shows a one-time "hasn't verified this app" warning at consent. Click Advanced, then Go to your app.
+
+Google requires a home page and privacy policy URL before you can publish. Any `https` URL works, such as your GitHub profile; add its domain under Authorized domains. Don't upload a logo, which triggers Google's verification review.
+
+The app is published, so the refresh token persists. You only need to consent again if you revoke access or the token goes unused for six months; then an interactive `run` reopens the browser, and a `run` from cron or launchd exits with a message saying so.
 
 Global flag: `--config <path>`.
 
