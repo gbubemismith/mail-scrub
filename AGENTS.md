@@ -4,7 +4,7 @@
 
 - After every code change run `scripts/check.sh` (fmt, clippy with warnings as errors, full tests) and fix what it reports before calling the work done. Use `--fast` to skip tests while iterating. The pre-commit hook runs `--fast`; CI runs the full script.
 - No `unwrap`, `expect` or `panic!` in non-test code; clippy denies them. Return errors instead: `thiserror` types in the library, `anyhow` only in `cli.rs`.
-- Clippy pedantic is on. Fix warnings rather than adding `#[allow]`; if an allow is truly warranted, scope it tightly and say why.
+- Clippy pedantic is on.
 - Keep `main.rs` thin. Logic lives in the library.
 - Match the surrounding code's naming, comment density and idiom.
 

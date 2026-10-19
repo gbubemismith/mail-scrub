@@ -18,6 +18,18 @@ pub enum ConfigError {
     },
     #[error("invalid config: {0}")]
     Parse(#[from] toml::de::Error),
+    #[error("cannot write config {}: {source}", path.display())]
+    Write {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("cannot edit config {}: `gmail` is not a table", .0.display())]
+    GmailNotATable(PathBuf),
+    #[error("cannot edit config {}: {source}", path.display())]
+    Edit {
+        path: PathBuf,
+        source: toml_edit::TomlError,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -44,6 +56,70 @@ impl Config {
             source,
         })?;
         text.parse()
+    }
+}
+
+/// Record the Gmail client ID, creating the file (owner-only, since the
+/// Overrides in it reveal who emails the user) if it does not exist and
+/// leaving everything else in an existing file as the user wrote it.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read, parsed or written.
+pub fn set_client_id(path: &Path, client_id: &str) -> Result<(), ConfigError> {
+    let write_err = |source| ConfigError::Write {
+        path: path.to_owned(),
+        source,
+    };
+    let existing = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(source) => {
+            return Err(ConfigError::Read {
+                path: path.to_owned(),
+                source,
+            });
+        }
+    };
+    let mut doc: toml_edit::DocumentMut = existing.parse().map_err(|source| ConfigError::Edit {
+        path: path.to_owned(),
+        source,
+    })?;
+    doc.entry("gmail")
+        .or_insert_with(toml_edit::table)
+        .as_table_like_mut()
+        .ok_or_else(|| ConfigError::GmailNotATable(path.to_owned()))?
+        .insert("client_id", toml_edit::value(client_id));
+
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).map_err(write_err)?;
+    }
+    write_owner_only(path, &doc.to_string()).map_err(write_err)
+}
+
+/// Write with mode 0600 when creating; an existing file keeps its mode.
+fn write_owner_only(path: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)?.write_all(text.as_bytes())
+}
+
+/// Whether group or others can read the file. Always `false` where the
+/// platform has no such permission bits.
+pub fn is_readable_by_others(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o044 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        false
     }
 }
 

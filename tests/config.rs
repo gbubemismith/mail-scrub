@@ -126,3 +126,65 @@ fn load_reads_a_file_and_reports_a_missing_one() {
     let err = Config::load(&dir.path().join("missing.toml")).unwrap_err();
     assert!(err.to_string().contains("missing.toml"), "{err}");
 }
+
+#[cfg(unix)]
+mod permissions {
+    use std::os::unix::fs::PermissionsExt;
+
+    use mail_scrub::config::{self, Config};
+
+    fn mode(path: &std::path::Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn set_client_id_creates_the_file_owner_only_with_just_the_client_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("mailscrub.toml");
+
+        config::set_client_id(&path, "abc.apps.googleusercontent.com").unwrap();
+
+        assert_eq!(mode(&path), 0o600);
+        let config = Config::load(&path).unwrap();
+        assert_eq!(
+            config.gmail.client_id.as_deref(),
+            Some("abc.apps.googleusercontent.com")
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap().trim(),
+            "[gmail]\nclient_id = \"abc.apps.googleusercontent.com\""
+        );
+    }
+
+    #[test]
+    fn set_client_id_keeps_what_the_user_already_wrote() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mailscrub.toml");
+        std::fs::write(
+            &path,
+            "# my overrides\n[overrides.sender]\n\"paypal.com\" = \"Finance\"\n",
+        )
+        .unwrap();
+
+        config::set_client_id(&path, "new-id").unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# my overrides"), "{text}");
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.overrides.sender["paypal.com"], "Finance");
+        assert_eq!(config.gmail.client_id.as_deref(), Some("new-id"));
+    }
+
+    #[test]
+    fn a_config_readable_by_others_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mailscrub.toml");
+        std::fs::write(&path, "").unwrap();
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(config::is_readable_by_others(&path));
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(!config::is_readable_by_others(&path));
+    }
+}

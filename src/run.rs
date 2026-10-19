@@ -65,6 +65,24 @@ pub enum RunError {
     StageStopped(&'static str),
 }
 
+/// Whether a Run should be a dry run. An explicit `apply` or `dry_run` wins;
+/// otherwise only the first Run, before any Run has finished, previews so the
+/// user sees the planned changes before anything is written. A preview counts:
+/// once seen, the next plain Run applies, which is what a scheduled job needs.
+///
+/// # Errors
+///
+/// Returns an error if the database cannot be read.
+pub async fn resolve_dry_run(db: &Db, dry_run: bool, apply: bool) -> Result<bool, DbError> {
+    if dry_run {
+        return Ok(true);
+    }
+    if apply {
+        return Ok(false);
+    }
+    Ok(db.runs().await?.iter().all(|r| r.cursor_after.is_none()))
+}
+
 /// Perform one Run against `client`, recording it in `db`.
 ///
 /// # Errors

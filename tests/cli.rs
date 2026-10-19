@@ -1,19 +1,15 @@
-//! `mailscrub run` end to end through the real binary.
+//! The real binary's command line.
 
 use std::process::Command;
-
-use mail_scrub::db::{Db, RunKind};
 
 fn mailscrub() -> Command {
     Command::new(env!("CARGO_BIN_EXE_mailscrub"))
 }
 
-#[tokio::test]
-async fn run_completes_against_an_empty_mailbox_and_records_one_run() {
+#[test]
+fn run_without_a_client_id_points_at_setup() {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("mailscrub.toml");
-    // The database location is fixed; XDG_DATA_HOME keeps the test out of the real one.
-    let db_path = dir.path().join("mailscrub").join("mailscrub.db");
     std::fs::write(&config, "[overrides.sender]\n").unwrap();
 
     let output = mailscrub()
@@ -24,29 +20,25 @@ async fn run_completes_against_an_empty_mailbox_and_records_one_run() {
         .output()
         .unwrap();
 
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(
-        stdout.contains("0 labelled, 0 filters changed, 0 unknown"),
-        "{stdout}"
-    );
-    let runs = Db::open(&db_path).await.unwrap().runs().await.unwrap();
-    assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0].kind, RunKind::Full);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("mailscrub setup"), "{stderr}");
+}
+
+#[test]
+fn dry_run_and_apply_contradict_each_other() {
+    let output = mailscrub()
+        .args(["run", "--dry-run", "--apply"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot be used with"));
 }
 
 #[test]
 fn the_other_subcommands_exist_but_are_not_implemented_yet() {
-    for args in [
-        &["setup"][..],
-        &["review"],
-        &["refresh", "chase.com"],
-        &["status"],
-    ] {
+    for args in [&["review"][..], &["refresh", "chase.com"], &["status"]] {
         let output = mailscrub().args(args).output().unwrap();
 
         assert!(

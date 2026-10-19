@@ -2,6 +2,7 @@
 //! [`EmailClient`]; Gmail and the in-memory [`fake::FakeClient`] implement it.
 
 pub mod fake;
+pub mod gmail;
 
 use std::fmt;
 use std::future::Future;
@@ -17,6 +18,9 @@ pub enum ClientError {
     Unsupported,
     #[error("not found: {0}")]
     NotFound(String),
+    /// The provider no longer honours our credentials; the user must sign in again.
+    #[error("{}", crate::auth::EXPIRED_MESSAGE)]
+    AuthExpired,
     #[error(transparent)]
     Other(Box<dyn std::error::Error + Send + Sync>),
 }
@@ -29,6 +33,7 @@ pub struct MessageMeta {
     /// Bare address from the From header, e.g. `billing@email.chase.com`.
     pub sender_address: String,
     pub subject: Option<String>,
+    /// Seconds since the Unix epoch.
     pub internal_date: i64,
     pub label_ids: Vec<LabelId>,
 }

@@ -422,3 +422,32 @@ type = "Receipt"
         ["From/Finance", "INBOX", "Type/Receipt"]
     );
 }
+
+#[tokio::test]
+async fn the_first_run_is_a_dry_run_unless_apply_is_asked_for() {
+    let db = Db::open_in_memory().await.unwrap();
+
+    assert!(run::resolve_dry_run(&db, false, false).await.unwrap());
+    assert!(run::resolve_dry_run(&db, true, false).await.unwrap());
+    assert!(!run::resolve_dry_run(&db, false, true).await.unwrap());
+}
+
+#[tokio::test]
+async fn after_a_finished_run_plain_runs_apply_and_an_explicit_dry_run_still_previews() {
+    let client = FakeClient::new();
+    client.add_message(message("m1"));
+    let db = Db::open_in_memory().await.unwrap();
+    let config = Config::default();
+
+    let dry = RunOptions {
+        dry_run: true,
+        ..RunOptions::default()
+    };
+    run::execute(&client, &db, &config, dry).await.unwrap();
+
+    assert!(
+        !run::resolve_dry_run(&db, false, false).await.unwrap(),
+        "the preview has been seen; the next plain Run applies"
+    );
+    assert!(run::resolve_dry_run(&db, true, false).await.unwrap());
+}
